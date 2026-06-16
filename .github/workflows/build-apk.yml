@@ -78,10 +78,12 @@ jobs:
             echo "Blocked: legacy audio/recitation runtime reference found."
             exit 1
           fi
+
           if grep -RIn "I-32-minimal-tv-runtime-correction-release" app/src/main/assets/app.js app/src/main/assets/app-tv.css 2>/dev/null; then
             echo "Blocked: old Rev I-32 TV marker still exists in active source."
             exit 1
           fi
+
           echo "Legacy runtime checks passed."
 
       - name: Guard app.css unchanged
@@ -91,10 +93,12 @@ jobs:
           ACTUAL=$(sha256sum app/src/main/assets/app.css | awk '{print $1}')
           echo "app.css actual SHA-256:   ${ACTUAL}"
           echo "app.css expected SHA-256: ${APPCSS_SHA256}"
+
           if [ "${ACTUAL}" != "${APPCSS_SHA256}" ]; then
             echo "Blocked: app.css changed. Mobile/tablet stylesheet is locked."
             exit 1
           fi
+
           echo "app.css unchanged."
 
       - name: Static syntax and source guards
@@ -104,6 +108,7 @@ jobs:
           node --check app/src/main/assets/app.js
           node --check tools/dom_smoke.mjs
           node --check tools/tv_layout_probe.mjs
+
           node - <<'NODE'
           const fs = require('fs');
 
@@ -200,10 +205,13 @@ jobs:
           set -euo pipefail
           SOURCE_APK="app/build/outputs/apk/debug/app-debug.apk"
           test -f "${SOURCE_APK}"
+
           mkdir -p dist
           cp "${SOURCE_APK}" "dist/${APK_NAME}"
+
           APK_SIZE=$(stat -c%s "dist/${APK_NAME}")
           echo "APK size: ${APK_SIZE} bytes" | tee qa-results/apk-size-rev-i-36.txt
+
           if [ "${APK_SIZE}" -le 5242880 ]; then
             echo "Warning: APK size is not greater than 5 MB. Continuing because AAPT identity and runtime proof control acceptance."
           fi
@@ -214,10 +222,13 @@ jobs:
           set -euo pipefail
           AAPT_PATH=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)
           test -n "${AAPT_PATH}"
+
           "${AAPT_PATH}" dump badging "dist/${APK_NAME}" | tee qa-results/aapt-badging-rev-i-36.txt
+
           grep -q "package: name='com.ahmed.azkartv'" qa-results/aapt-badging-rev-i-36.txt
           grep -q "versionCode='${REVISION_CODE}'" qa-results/aapt-badging-rev-i-36.txt
           grep -q "versionName='${REVISION_NAME}'" qa-results/aapt-badging-rev-i-36.txt
+
           echo "AAPT package, versionCode, and versionName verified."
 
       - name: Upload Rev I-36 APK
