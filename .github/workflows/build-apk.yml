@@ -1,0 +1,248 @@
+name: Build Dua & Zikr Rev I-36 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+env:
+  REVISION_CODE: "58"
+  REVISION_NAME: "Rev I-36 - TV Visual Proof and Layout Closure"
+  APK_NAME: "dua-zikr-rev-i-36-debug.apk"
+  ANDROID_BUILD_TOOLS: "34.0.0"
+  APPCSS_SHA256: "d4c6bfd780271e1534d3395cf1f43f2393db1fd95f9fcc0e750f10b18966e14e"
+
+jobs:
+  build-debug-apk:
+    name: Build Rev I-36 Debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Chrome for TV visual proof
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;${ANDROID_BUILD_TOOLS}" "platform-tools"
+
+      - name: Verify project identity and Rev I-36 version
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -R "applicationId[[:space:]]*['\"]com.ahmed.azkartv['\"]" app/build.gradle
+          grep -R "versionCode[[:space:]]*${REVISION_CODE}" app/build.gradle
+          grep -R "versionName[[:space:]]*['\"].*${REVISION_NAME}.*['\"]" app/build.gradle
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/assets/index.html
+          test -f app/src/main/assets/app.js
+          test -f app/src/main/assets/app.css
+          test -f app/src/main/assets/app-tv.css
+          test -f tools/dom_smoke.mjs
+          test -f tools/tv_layout_probe.mjs
+          test -f gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.properties
+          echo "Project identity and Rev I-36 version verified."
+
+      - name: Block legacy runtime references
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE "audioBase|recAudio|recBtn|recitationNotes" app/src/main/assets app/src/main/java app/src/main/res 2>/dev/null; then
+            echo "Blocked: legacy audio/recitation runtime reference found."
+            exit 1
+          fi
+          if grep -RIn "I-32-minimal-tv-runtime-correction-release" app/src/main/assets/app.js app/src/main/assets/app-tv.css 2>/dev/null; then
+            echo "Blocked: old Rev I-32 TV marker still exists in active source."
+            exit 1
+          fi
+          echo "Legacy runtime checks passed."
+
+      - name: Guard app.css unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL=$(sha256sum app/src/main/assets/app.css | awk '{print $1}')
+          echo "app.css actual SHA-256:   ${ACTUAL}"
+          echo "app.css expected SHA-256: ${APPCSS_SHA256}"
+          if [ "${ACTUAL}" != "${APPCSS_SHA256}" ]; then
+            echo "Blocked: app.css changed. Mobile/tablet stylesheet is locked."
+            exit 1
+          fi
+          echo "app.css unchanged."
+
+      - name: Static syntax and source guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check app/src/main/assets/app.js
+          node --check tools/dom_smoke.mjs
+          node --check tools/tv_layout_probe.mjs
+          node - <<'NODE'
+          const fs = require('fs');
+
+          const css = fs.readFileSync('app/src/main/assets/app-tv.css', 'utf8');
+          const js = fs.readFileSync('app/src/main/assets/app.js', 'utf8');
+          const probe = fs.readFileSync('tools/tv_layout_probe.mjs', 'utf8');
+
+          const requiredCss = [
+            '--tv-fit-gap-scale',
+            'body.tv .reader-scroll > .arabic',
+            'body.tv .salawat-symbol',
+            'body.tv .arabic.tajweed-active .tw-ghunnah'
+          ];
+
+          const requiredJs = [
+            'showTranslit: false',
+            'showEnglish: false',
+            'showUrdu: false',
+            'showTitle: false',
+            'I-36-tv-visual-proof-layout-closure',
+            'document.fonts.ready'
+          ];
+
+          const requiredProbe = [
+            'import WebSocket from "ws"',
+            'tv-layout-probe-1920x1080.log',
+            'tv-layout-probe-1366x768.log',
+            'tv-screenshot-dark-1920x1080.png',
+            'tv-screenshot-light-1920x1080.png',
+            'tv-screenshot-full-reading-layers.png'
+          ];
+
+          for (const token of requiredCss) {
+            if (!css.includes(token)) throw new Error('Missing CSS guard: ' + token);
+          }
+
+          for (const token of requiredJs) {
+            if (!js.includes(token)) throw new Error('Missing JS guard: ' + token);
+          }
+
+          for (const token of requiredProbe) {
+            if (!probe.includes(token)) throw new Error('Missing probe guard: ' + token);
+          }
+
+          let depth = 0;
+          for (const ch of css) {
+            if (ch === '{') depth++;
+            if (ch === '}') depth--;
+            if (depth < 0) throw new Error('CSS brace underflow');
+          }
+
+          if (depth !== 0) throw new Error('CSS brace mismatch: ' + depth);
+
+          console.log('Static source guards passed.');
+          NODE
+
+      - name: DOM smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p qa-results
+          npm install --no-save jsdom@24 ws@8
+          node tools/dom_smoke.mjs 2>&1 | tee qa-results/dom-smoke-rev-i-36.log
+          grep -q "RESULT: PASS" qa-results/dom-smoke-rev-i-36.log
+          echo "DOM smoke test passed."
+
+      - name: Browser TV layout probe and screenshot proof
+        shell: bash
+        env:
+          CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p qa-results
+          node tools/tv_layout_probe.mjs 2>&1 | tee qa-results/tv-layout-probe-console-rev-i-36.log
+          grep -q "RESULT: PASS" qa-results/tv-layout-probe-summary-rev-i-36.log
+          test -f qa-results/tv-layout-probe-1920x1080.log
+          test -f qa-results/tv-layout-probe-1366x768.log
+          test -f qa-results/tv-screenshot-dark-1920x1080.png
+          test -f qa-results/tv-screenshot-light-1920x1080.png
+          test -f qa-results/tv-screenshot-full-reading-layers.png
+          echo "Browser TV layout probe and screenshots passed."
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace --warning-mode all :app:assembleDebug 2>&1 | tee qa-results/gradle-assemble-debug-rev-i-36.log
+          grep -q "BUILD SUCCESSFUL" qa-results/gradle-assemble-debug-rev-i-36.log
+
+      - name: Prepare APK artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -f "${SOURCE_APK}"
+          mkdir -p dist
+          cp "${SOURCE_APK}" "dist/${APK_NAME}"
+          APK_SIZE=$(stat -c%s "dist/${APK_NAME}")
+          echo "APK size: ${APK_SIZE} bytes" | tee qa-results/apk-size-rev-i-36.txt
+          if [ "${APK_SIZE}" -le 5242880 ]; then
+            echo "Warning: APK size is not greater than 5 MB. Continuing because AAPT identity and runtime proof control acceptance."
+          fi
+
+      - name: Verify APK with AAPT
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAPT_PATH=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)
+          test -n "${AAPT_PATH}"
+          "${AAPT_PATH}" dump badging "dist/${APK_NAME}" | tee qa-results/aapt-badging-rev-i-36.txt
+          grep -q "package: name='com.ahmed.azkartv'" qa-results/aapt-badging-rev-i-36.txt
+          grep -q "versionCode='${REVISION_CODE}'" qa-results/aapt-badging-rev-i-36.txt
+          grep -q "versionName='${REVISION_NAME}'" qa-results/aapt-badging-rev-i-36.txt
+          echo "AAPT package, versionCode, and versionName verified."
+
+      - name: Upload Rev I-36 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dua-and-zikr-rev-i-36-debug-apk
+          path: dist/dua-zikr-rev-i-36-debug.apk
+          if-no-files-found: error
+
+      - name: Upload Rev I-36 required proof files
+        uses: actions/upload-artifact@v4
+        with:
+          name: rev-i-36-required-proof-files
+          if-no-files-found: error
+          path: |
+            qa-results/dom-smoke-rev-i-36.log
+            qa-results/tv-layout-probe-console-rev-i-36.log
+            qa-results/tv-layout-probe-summary-rev-i-36.log
+            qa-results/tv-layout-probe-1920x1080.log
+            qa-results/tv-layout-probe-1366x768.log
+            qa-results/tv-layout-probe-1920x1080.json
+            qa-results/tv-layout-probe-1366x768.json
+            qa-results/tv-screenshot-dark-1920x1080.png
+            qa-results/tv-screenshot-light-1920x1080.png
+            qa-results/tv-screenshot-full-reading-layers.png
+            qa-results/gradle-assemble-debug-rev-i-36.log
+            qa-results/aapt-badging-rev-i-36.txt
+            qa-results/apk-size-rev-i-36.txt
